@@ -1,0 +1,117 @@
+# Uncomment this line to define a global platform for your project
+platform :ios, '13.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+def flutter_install_plugin_pods(application_path = nil, relative_symlink_dir, platform)
+  # defined_in_file is set by CocoaPods and is a Pathname to the Podfile.
+  application_path ||= File.dirname(defined_in_file.realpath) if self.respond_to?(:defined_in_file)
+  raise 'Could not find application path' unless application_path
+
+  # Prepare symlinks folder. We use symlinks to avoid having Podfile.lock
+  # referring to absolute paths on developers' machines.
+
+  symlink_dir = File.expand_path(relative_symlink_dir, application_path)
+  system('rm', '-rf', symlink_dir) # Avoid the complication of dependencies like FileUtils.
+
+  symlink_plugins_dir = File.expand_path('plugins', symlink_dir)
+  system('mkdir', '-p', symlink_plugins_dir)
+
+  plugins_file = File.join(application_path, '..', '.flutter-plugins-dependencies')
+  plugin_pods = flutter_parse_plugins_file(plugins_file, platform)
+  plugin_pods.each do |plugin_hash|
+    plugin_name = plugin_hash['name']
+    plugin_path = plugin_hash['path']
+    if (plugin_name && plugin_path)
+      symlink = File.join(symlink_plugins_dir, plugin_name)
+      File.symlink(plugin_path, symlink)
+
+      if plugin_name == 'firebase_core'
+        pod plugin_name, :path => File.join(relative_symlink_dir, 'plugins', plugin_name, 'ios')
+      else
+        pod plugin_name, :path => File.join(relative_symlink_dir, 'plugins', plugin_name, platform)
+      end
+    end
+  end
+end
+
+def flutter_parse_plugins_file(file, platform)
+  file_path = File.expand_path(file)
+  return [] unless File.exist?(file_path)
+
+  dependencies_file = File.read(file_path)
+  dependencies_hash = JSON.parse(dependencies_file)
+
+  # dependencies_hash.dig('plugins', 'ios') not supported in Ruby 2.0
+  return [] unless dependencies_hash.has_key?('plugins')
+  return [] unless dependencies_hash['plugins'].has_key?(platform)
+
+  dependencies_hash['plugins'][platform] || []
+end
+
+def flutter_install_ios_engine_pod(ios_application_path = nil)
+  # defined_in_file is set by CocoaPods and is a Pathname to the Podfile.
+  ios_application_path ||= File.dirname(defined_in_file.realpath) if self.respond_to?(:defined_in_file)
+  raise 'Could not find iOS application path' unless ios_application_path
+
+  copied_engine = File.expand_path('Flutter/engine', ios_application_path)
+  copied_framework_path = File.expand_path('Flutter.xcframework', copied_engine)
+  copied_podspec = File.expand_path('Flutter.podspec', copied_engine)
+
+  if File.exist?(copied_framework_path) && File.exist?(copied_podspec)
+    # Already copied engine. Use the local copy.
+    pod 'Flutter', :podspec => copied_podspec
+  else
+    # Use the default Flutter engine podspec.
+    pod 'Flutter', :path => 'Flutter'
+  end
+end
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_ios_engine_pod
+  flutter_install_plugin_pods(File.dirname(File.realpath(__FILE__)), '.symlinks', 'ios')
+  
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      config.build_settings['ENABLE_BITCODE'] = 'NO'
+      
+      # Workaround for Xcode 15 DT_TOOLCHAIN_DIR - see https://github.com/flutter/flutter/issues/134212
+      xcconfig_path = config.base_configuration_reference.real_path
+      if xcconfig_path && File.exist?(xcconfig_path)
+        xcconfig = File.read(xcconfig_path)
+        xcconfig_mod = xcconfig.gsub(/DT_TOOLCHAIN_DIR/, 'TOOLCHAIN_DIR')
+        File.open(xcconfig_path, "w") { |file| file << xcconfig_mod }
+      end
+    end
+  end
+end
